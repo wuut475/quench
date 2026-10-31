@@ -29,12 +29,26 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# ---------------- 可调参数 ----------------
-WINDOW_START = (9, 0)     # 推送窗口开始
-WINDOW_END = (21, 30)     # 推送窗口结束（留出睡前时间）
-SLOTS = 8                 # 一天几次 × 每次 300ml ≈ 2.4L
-MIN_GAP = 55              # 相邻两次最短间隔（分钟）
-TICK = 5                  # 定时触发周期（分钟），必须等于触发器周期
+# ---------------- 可调参数（都能用环境变量覆盖） ----------------
+def _env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _env_hm(name, default):
+    raw = os.environ.get(name, default)
+    h, m = raw.split(":")
+    return int(h), int(m)
+
+
+WINDOW_START = _env_hm("QUENCH_WINDOW_START", "9:00")   # 推送窗口开始
+WINDOW_END = _env_hm("QUENCH_WINDOW_END", "21:30")      # 结束，留出睡前时间
+SLOTS = _env_int("QUENCH_SLOTS", 8)                     # 一天几次
+MIN_GAP = _env_int("QUENCH_MIN_GAP", 55)                # 相邻两次最短间隔（分钟）
+TICK = _env_int("QUENCH_TICK", 5)                       # 触发周期，必须等于触发器间隔
+FOLLOW_UP = _env_int("QUENCH_FOLLOW_UP", 0)             # 追单：主推后多少分钟再催一次，0=关闭
 
 CST = timezone(timedelta(hours=8))
 
@@ -115,6 +129,13 @@ def pick_message(date_str: str, idx: int) -> str:
     return _plan(date_str)[idx]
 
 
+def nag_message(date_str: str, idx: int) -> str:
+    """追单文案：主推之后再来一条，盯的是「没喝完」，不是再提醒一次。"""
+    rng = _rng("nag|%s|%d" % (date_str, idx))
+    pool = LIB.get("nag") or ["还剩几口？喝完才算了事。"]
+    return rng.choice(pool)
+
+
 # ---------------- 推送 ----------------
 def bark(title: str, body: str) -> bool:
     if not BARK_KEY:
@@ -147,7 +168,11 @@ def check(now=None) -> dict:
             msg = pick_message(date_str, idx)
             title = "喝水 · 第 %d/%d 杯" % (n, SLOTS) if n >= 3 else "喝水"
             ok = bark(title, msg)
-            return {"fired": True, "slot": s, "idx": idx, "ok": ok, "msg": msg}
+            return {"fired": True, "kind": "main", "slot": s, "idx": idx, "ok": ok, "msg": msg}
+        if FOLLOW_UP >= TICK and s + FOLLOW_UP <= minute_now < s + FOLLOW_UP + TICK:
+            msg = nag_message(date_str, idx)
+            ok = bark("喝完了吗", msg)
+            return {"fired": True, "kind": "follow", "slot": s, "idx": idx, "ok": ok, "msg": msg}
     return {"fired": False, "now": minute_now, "slots": slots}
 
 
